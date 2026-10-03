@@ -1,0 +1,21 @@
+services:
+  taskflow:
+    image: ${TASKFLOW_IMAGE:?Set TASKFLOW_IMAGE to the CI-published digest}
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8001}:8000"
+    environment:
+      APP_VERSION: ${APP_VERSION:-staging}
+      DATABASE_URL: sqlite:////data/taskflow.db
+      LOG_LEVEL: INFO
+      SIMULATE_FAILURE: "false"
+    volumes:
+      - staging_taskflow_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  staging_taskflow_data:

@@ -1,0 +1,23 @@
+# Local blue/green approximation: deploy a candidate then retain last-known-good image in state/.
+# A reverse proxy/load balancer would perform traffic switching in a cloud implementation.
+services:
+  taskflow:
+    image: ${TASKFLOW_IMAGE:?Set TASKFLOW_IMAGE to the CI-published digest}
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      APP_VERSION: ${APP_VERSION:-production}
+      DATABASE_URL: sqlite:////data/taskflow.db
+      LOG_LEVEL: INFO
+      SIMULATE_FAILURE: ${SIMULATE_FAILURE:-false}
+    volumes:
+      - production_taskflow_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  production_taskflow_data:

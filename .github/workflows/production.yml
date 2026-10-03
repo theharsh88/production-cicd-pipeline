@@ -1,0 +1,81 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Staging-verified immutable GHCR reference ending in @sha256:...'
+        required: true
+        type: string
+      simulate_failure:
+        description: 'Enable controlled /api/demo/failure endpoint for demonstration only'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy-monitor:
+    runs-on: [self-hosted, production]
+    environment: production # Configure required reviewers in repository Settings.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set controlled failure simulation flag
+        run: |
+          mkdir -p deployment/production
+          sed -i '/^SIMULATE_FAILURE=/d' deployment/production/.env 2>/dev/null || true
+          echo "SIMULATE_FAILURE=${{ inputs.simulate_failure }}" >> deployment/production/.env
+      - name: Deploy exact staging-verified image
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: bash scripts/deploy_compose.sh production "$IMAGE"
+      - name: Generate bounded failure traffic for rollback demo
+        if: inputs.simulate_failure
+        run: python3 scripts/generate_demo_failures.py --base-url "${PRODUCTION_BASE_URL:-http://localhost:8000}" --requests 20
+      - name: Stabilize before evaluation
+        run: |
+          set -a
+          source deployment/production/.env
+          set +a
+          sleep "${ROLLBACK_WINDOW_SECONDS:-60}"
+      - name: Evaluate production error rate
+        run: |
+          set -a
+          source deployment/production/.env
+          set +a
+          python3 scripts/calculate_error_rate.py \
+            --base-url "${PRODUCTION_BASE_URL:-http://localhost:8000}" \
+            --threshold "${ROLLBACK_ERROR_RATE_THRESHOLD:-5}"
+      - name: Mark release known-good
+        if: success()
+        run: bash scripts/mark_stable.sh
+      - name: Trigger rollback on failed deployment or monitoring
+        if: failure()
+        run: bash scripts/rollback.sh
+      - name: Optional automatic rollback notification
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: >-
+          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json'
+          --data '{"text":"TaskFlow automatic rollback was triggered; inspect the production job."}' "$WEBHOOK" || true
+      - name: Optional production notification
+        if: always() && secrets.SLACK_WEBHOOK_URL != ''
+        env:
+          WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RESULT: ${{ job.status }}
+        run: >-
+          curl --fail --silent --show-error -X POST -H 'Content-Type: application/json'
+          --data "{\"text\":\"TaskFlow production deployment: ${RESULT}\"}" "$WEBHOOK" || true
